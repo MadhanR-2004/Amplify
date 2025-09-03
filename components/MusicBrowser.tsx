@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, RefObject } from 'react';
+import { useState, useEffect, RefObject, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '@/lib/utils';
 import { 
@@ -92,7 +92,10 @@ export default function MusicBrowser({
   audioRef,
 }: MusicBrowserProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [filteredData, setFilteredData] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<{ songs: Music[]; albums: any[]; artists: any[] }>({ songs: [], albums: [], artists: [] });
+  const searchViewInputRef = useRef<HTMLInputElement>(null);
   const [selectedAlbum, setSelectedAlbum] = useState<Album | null>(null);
   const [selectedArtist, setSelectedArtist] = useState<any | null>(null);
   const [currentAlbumSongIndex, setCurrentAlbumSongIndex] = useState(0);
@@ -138,10 +141,19 @@ export default function MusicBrowser({
     };
   }, []);
 
+  // Debounce search term to reduce re-renders
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
   useEffect(() => {
     filterData();
     
-    // Clear selections when switching views
+    // Clear selections when switching views (but not when search term changes)
     if (selectedArtist) {
       setSelectedArtist(null);
       setShowAllArtistSongs(false); // Reset artist songs view
@@ -159,7 +171,22 @@ export default function MusicBrowser({
         fetchAllArtists();
       }
     }
-  }, [activeView, music, searchTerm, allArtists.length]);
+  }, [activeView, music, allArtists.length]);
+
+  // Separate effect for search filtering to avoid clearing selections on search
+  useEffect(() => {
+    if (activeView === 'search') {
+      setSearchResults(performAdvancedSearch(debouncedSearchTerm));
+    } else {
+      filterData();
+    }
+  }, [debouncedSearchTerm]);
+
+  useEffect(() => {
+    if (activeView !== 'search') {
+      filterData();
+    }
+  }, [activeView, music, allArtists.length]);
 
   // Update current time for progress bar
   useEffect(() => {
@@ -214,10 +241,7 @@ export default function MusicBrowser({
 
     switch (activeView) {
       case 'songs':
-        data = music.filter(song => 
-          song.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          song.artist.toLowerCase().includes(searchTerm.toLowerCase())
-        );
+        data = music;
         break;
       
       case 'albums':
@@ -262,20 +286,12 @@ export default function MusicBrowser({
           }
         });
         
-        data = albumsFromSongs.filter(album =>
-          album && album.name && (
-            album.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            album.artist.toLowerCase().includes(searchTerm.toLowerCase())
-          )
-        );
+        data = albumsFromSongs;
         break;
       
       case 'artists':
-        // Use all artists from the database instead of just those with songs
+        // Use all artists from the database
         data = allArtists
-          .filter(artist => 
-            artist.name.toLowerCase().includes(searchTerm.toLowerCase())
-          )
           .map(artist => {
             // Get songs for this artist from the music collection
             const artistSongs = music.filter(song => 
@@ -311,11 +327,157 @@ export default function MusicBrowser({
           });
         break;
       
+      case 'search':
+        // For search view, we'll handle the data differently
+        // Don't set filteredData here, let the search view handle its own data
+        return;
+      
       default:
         data = music;
     }
 
     setFilteredData(data);
+  };
+
+  const performAdvancedSearch = (term: string) => {
+    if (!term.trim()) return { songs: [], albums: [], artists: [] };
+
+    const lowerTerm = term.toLowerCase();
+    
+    // Enhanced search for songs with artist and album information
+    const matchingSongs = music.filter(song =>
+      song.title.toLowerCase().includes(lowerTerm) ||
+      song.artist.toLowerCase().includes(lowerTerm) ||
+      song.album.toLowerCase().includes(lowerTerm) ||
+      (typeof song.genre === 'string' && song.genre.toLowerCase().includes(lowerTerm)) ||
+      (Array.isArray(song.genre) && song.genre.some(g => g.toLowerCase().includes(lowerTerm)))
+    ).map(song => {
+      // Add related artist information
+      const relatedArtist = allArtists.find(artist => 
+        artist.name === song.artist || 
+        (song.artists && song.artists.some(a => a.name === artist.name))
+      );
+      
+      // Find the album this song belongs to
+      const songAlbum = song.songType !== 'single' && song.album && 
+        song.album.toLowerCase() !== 'unknown album' && song.album !== '' 
+        ? {
+            name: song.album,
+            artist: song.artist,
+            thumbnail: song.thumbnailUrl
+          } 
+        : null;
+
+      return {
+        ...song,
+        relatedArtist: relatedArtist ? {
+          _id: relatedArtist._id,
+          name: relatedArtist.name,
+          bio: relatedArtist.bio,
+          thumbnail: relatedArtist.imageUrl || '/default-thumbnail.svg',
+          genre: relatedArtist.genre
+        } : null,
+        relatedAlbum: songAlbum
+      };
+    });
+
+    // Enhanced search for albums with artist and song information
+    const albumMap = new Map();
+    music.filter(song => 
+      song.songType !== 'single' && 
+      song.album && 
+      song.album.toLowerCase() !== 'unknown album' && 
+      song.album !== ''
+    ).forEach(song => {
+      if (!albumMap.has(song.album)) {
+        albumMap.set(song.album, {
+          name: song.album,
+          artist: song.artist,
+          thumbnail: song.thumbnailUrl,
+          songs: [],
+          duration: 0,
+        });
+      }
+      const album = albumMap.get(song.album);
+      if (album && album.songs) {
+        album.songs.push(song);
+        album.duration += song.duration;
+      }
+    });
+
+    const matchingAlbums = Array.from(albumMap.values())
+      .filter(album =>
+        album.name.toLowerCase().includes(lowerTerm) ||
+        album.artist.toLowerCase().includes(lowerTerm)
+      )
+      .map(album => {
+        // Add related artist information
+        const relatedArtist = allArtists.find(artist => artist.name === album.artist);
+        
+        return {
+          ...album,
+          relatedArtist: relatedArtist ? {
+            _id: relatedArtist._id,
+            name: relatedArtist.name,
+            bio: relatedArtist.bio,
+            thumbnail: relatedArtist.imageUrl || '/default-thumbnail.svg',
+            genre: relatedArtist.genre
+          } : null,
+          topSongs: album.songs.slice(0, 3) // Show top 3 songs from the album
+        };
+      });
+
+    // Enhanced search for artists with albums and songs information
+    const matchingArtists = allArtists
+      .filter(artist => 
+        artist.name.toLowerCase().includes(lowerTerm) ||
+        (artist.bio && artist.bio.toLowerCase().includes(lowerTerm)) ||
+        (artist.genre && artist.genre.some(g => g.toLowerCase().includes(lowerTerm)))
+      )
+      .map(artist => {
+        const artistSongs = music.filter(song => 
+          song.artist === artist.name || 
+          (song.artists && song.artists.some(a => a.name === artist.name))
+        );
+        
+        // Get unique albums for this artist
+        const artistAlbumsSet = new Set();
+        const artistAlbums: Array<{
+          name: string;
+          thumbnail: string;
+          songs: Music[];
+        }> = [];
+        artistSongs.forEach(song => {
+          if (song.songType === 'album' && song.album && !artistAlbumsSet.has(song.album)) {
+            artistAlbumsSet.add(song.album);
+            artistAlbums.push({
+              name: song.album,
+              thumbnail: song.thumbnailUrl,
+              songs: artistSongs.filter(s => s.album === song.album)
+            });
+          }
+        });
+        
+        return {
+          _id: artist._id,
+          name: artist.name,
+          bio: artist.bio,
+          thumbnail: artist.imageUrl || '/default-thumbnail.svg',
+          genre: artist.genre,
+          songs: artistSongs,
+          albums: artistAlbums,
+          songCount: artistSongs.length,
+          albumCount: artistAlbums.length,
+          topSongs: artistSongs.slice(0, 5), // Show top 5 songs
+          relatedAlbums: artistAlbums.slice(0, 3) // Show top 3 albums
+        };
+      });
+
+    return {
+      songs: matchingSongs,
+      albums: matchingAlbums,
+      artists: matchingArtists
+    };
   };
 
   const getViewIcon = () => {
@@ -508,27 +670,9 @@ export default function MusicBrowser({
     </div>
   );
 
-  const MobileSearchBar = () => (
-    <div className="flex items-center gap-2 mb-4">
-      <div className="flex-1">
-        <input
-          type="text"
-          placeholder={`Search ${activeView}...`}
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full px-3 py-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-400 text-sm"
-        />
-      </div>
-      <button aria-label="Shuffle" className="p-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg hover:bg-white/20 transition-colors">
-        <IconArrowsShuffle size={18} />
-      </button>
-    </div>
-  );
-
   const renderMobileMainView = () => (
     <div className="flex-1 p-3">
       <MobileHeader />
-      <MobileSearchBar />
 
       {/* Content */}
       <AnimatePresence mode="wait">
@@ -1519,19 +1663,285 @@ export default function MusicBrowser({
   if (activeView === 'search') {
     return (
       <div className="flex-1 p-3 sm:p-4 md:p-6">
-        <div className="max-w-2xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           <h2 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 flex items-center gap-2">
             <IconSearch size={20} className="sm:w-6 sm:h-6" />
             Search Music
           </h2>
           <input
-            type="text"
+            ref={searchViewInputRef}
+            type="search"
+            inputMode="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
             placeholder="Search for songs, artists, albums..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full px-3 sm:px-4 py-3 bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-blue-400 text-sm sm:text-base"
+            onTouchStart={(e) => {
+              e.stopPropagation();
+            }}
+            onTouchEnd={(e) => {
+              e.stopPropagation();
+              // Ensure focus is maintained on touch devices
+              setTimeout(() => {
+                if (searchViewInputRef.current) {
+                  searchViewInputRef.current.focus();
+                }
+              }, 100);
+            }}
+            onFocus={(e) => {
+              try { e.currentTarget.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch {}
+            }}
+            className="w-full px-3 sm:px-4 py-3 bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-blue-400 text-sm sm:text-base pointer-events-auto mb-6"
           />
-          {/* Search results would go here */}
+          
+          {/* Search Results */}
+          {searchTerm.trim() && (
+            <div className="space-y-8">
+              {/* Songs Results */}
+              {searchResults.songs.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                    <IconMusic size={18} />
+                    Songs ({searchResults.songs.length})
+                  </h3>
+                  <div className="grid gap-3">
+                    {searchResults.songs.slice(0, 5).map((song: any) => (
+                      <motion.div
+                        key={song._id}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className={cn(
+                          "group flex items-center gap-3 sm:gap-4 p-3 sm:p-4 rounded-xl transition-all duration-200 cursor-pointer",
+                          "bg-white/5 backdrop-blur-sm border border-white/10",
+                          "hover:bg-white/10 hover:border-white/20",
+                          currentSong?._id === song._id && "bg-blue-500/20 border-blue-400/50"
+                        )}
+                        onClick={() => onSongSelect(song, searchResults.songs, 'search')}
+                      >
+                        <div className="relative flex-shrink-0">
+                          <img
+                            src={song.thumbnailUrl}
+                            alt={song.title}
+                            className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = '/default-thumbnail.svg';
+                            }}
+                          />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (currentSong?._id === song._id) {
+                                onPlayPause();
+                              } else {
+                                onSongSelect(song, searchResults.songs, 'search');
+                              }
+                            }}
+                            className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            {currentSong?._id === song._id && isPlaying ? (
+                              <IconPlayerPause size={16} className="text-white" />
+                            ) : (
+                              <IconPlayerPlay size={16} className="text-white" />
+                            )}
+                          </button>
+                        </div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-semibold text-white truncate text-sm sm:text-base">{song.title}</h4>
+                          <p className="text-gray-400 text-xs sm:text-sm truncate">
+                            {formatArtists(song)} • {getSongType(song)}
+                          </p>
+                          {song.genre && (
+                            <p className="text-gray-500 text-xs truncate">{formatGenres(song.genre)}</p>
+                          )}
+                          {/* Show related artist and album info */}
+                          {(song.relatedArtist || song.relatedAlbum) && (
+                            <div className="flex flex-wrap gap-2 mt-1">
+                              {song.relatedArtist && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded text-xs">
+                                  <IconMicrophone size={10} />
+                                  {song.relatedArtist.name}
+                                </span>
+                              )}
+                              {song.relatedAlbum && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded text-xs">
+                                  <IconDisc size={10} />
+                                  {song.relatedAlbum.name}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="text-gray-400 text-xs sm:text-sm flex-shrink-0">
+                          {formatDuration(song.duration)}
+                        </div>
+                      </motion.div>
+                    ))}
+                    {searchResults.songs.length > 5 && (
+                      <div className="text-center text-gray-400 text-sm py-2">
+                        +{searchResults.songs.length - 5} more songs
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Albums Results */}
+              {searchResults.albums.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                    <IconDisc size={18} />
+                    Albums ({searchResults.albums.length})
+                  </h3>
+                  <div className="grid gap-4 grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                    {searchResults.albums.slice(0, 10).map((album: any) => (
+                      <motion.div
+                        key={album.name}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="group cursor-pointer"
+                        onClick={() => handleAlbumClick(album)}
+                      >
+                        <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl p-3 hover:bg-white/10 hover:border-white/20 transition-all duration-200">
+                          <div className="relative mb-3">
+                            <img
+                              src={album.thumbnail}
+                              alt={album.name}
+                              className="w-full aspect-square rounded-lg object-cover"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).src = '/default-thumbnail.svg';
+                              }}
+                            />
+                            <button className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity">
+                              <IconPlayerPlay size={20} className="text-white" />
+                            </button>
+                          </div>
+                          <h4 className="font-semibold text-white truncate text-sm">{album.name}</h4>
+                          <p className="text-gray-400 text-xs truncate">{album.artist}</p>
+                          <p className="text-gray-500 text-xs">
+                            {album.songs?.length || 0} songs
+                          </p>
+                          
+                          {/* Show related artist info */}
+                          {album.relatedArtist && (
+                            <div className="mt-1">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded text-xs">
+                                <IconMicrophone size={10} />
+                                Artist
+                              </span>
+                            </div>
+                          )}
+                          
+                          {/* Show top songs from album */}
+                          {album.topSongs && album.topSongs.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Top Songs:</p>
+                              {album.topSongs.slice(0, 2).map((song: any, idx: number) => (
+                                <p key={song._id} className="text-xs text-gray-400 truncate">
+                                  {idx + 1}. {song.title}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Artists Results */}
+              {searchResults.artists.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+                    <IconMicrophone size={18} />
+                    Artists ({searchResults.artists.length})
+                  </h3>
+                  <div className="grid gap-4 grid-cols-1 xs:grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+                    {searchResults.artists.slice(0, 10).map((artist: any) => (
+                      <motion.div
+                        key={artist._id}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="group cursor-pointer"
+                        onClick={() => handleArtistClick(artist)}
+                      >
+                        <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-xl p-3 hover:bg-white/10 hover:border-white/20 transition-all duration-200">
+                          <div className="relative mb-3">
+                            <img
+                              src={artist.thumbnail}
+                              alt={artist.name}
+                              className="w-full aspect-square rounded-full object-cover"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).src = '/default-thumbnail.svg';
+                              }}
+                            />
+                          </div>
+                          <h4 className="font-semibold text-white truncate text-sm text-center">{artist.name}</h4>
+                          <p className="text-gray-400 text-xs text-center">
+                            {artist.songCount} songs • {artist.albumCount} albums
+                          </p>
+                          {artist.genre && artist.genre.length > 0 && (
+                            <p className="text-gray-500 text-xs text-center truncate">
+                              {artist.genre.slice(0, 2).join(', ')}
+                            </p>
+                          )}
+                          
+                          {/* Show top songs */}
+                          {artist.topSongs && artist.topSongs.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Top Songs:</p>
+                              {artist.topSongs.slice(0, 3).map((song: any, idx: number) => (
+                                <p key={song._id} className="text-xs text-gray-400 truncate">
+                                  {idx + 1}. {song.title}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          
+                          {/* Show top albums */}
+                          {artist.relatedAlbums && artist.relatedAlbums.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Albums:</p>
+                              {artist.relatedAlbums.slice(0, 2).map((albumInfo: any, idx: number) => (
+                                <div key={idx} className="flex items-center gap-1">
+                                  <IconDisc size={10} className="text-purple-400" />
+                                  <p className="text-xs text-gray-400 truncate">{albumInfo.name}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* No Results */}
+              {searchResults.songs.length === 0 && searchResults.albums.length === 0 && searchResults.artists.length === 0 && (
+                <div className="text-center py-12">
+                  <IconSearch size={48} className="text-gray-500 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-gray-400 mb-2">No results found</h3>
+                  <p className="text-gray-500">Try searching for a different song, artist, or album</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Default Search State */}
+          {!searchTerm.trim() && (
+            <div className="text-center py-12">
+              <IconSearch size={48} className="text-gray-500 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-400 mb-2">Search your music library</h3>
+              <p className="text-gray-500">Find songs, albums, and artists instantly</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1554,19 +1964,6 @@ export default function MusicBrowser({
             {getViewIcon()}
             {activeView}
           </h2>
-          
-          <div className="flex flex-1 items-center gap-2 sm:gap-4">
-            <input
-              type="text"
-              placeholder={`Search ${activeView}...`}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="flex-1 px-3 sm:px-4 py-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-400 text-sm sm:text-base"
-            />
-            <button aria-label="Shuffle" className="p-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg hover:bg-white/20 transition-colors">
-              <IconArrowsShuffle size={20} />
-            </button>
-          </div>
         </div>
 
   {/* Content Grid - desktop uses internal scroll; mobile uses page scroll */}
