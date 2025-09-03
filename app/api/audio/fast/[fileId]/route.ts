@@ -9,7 +9,7 @@ const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 export async function GET(
   request: NextRequest,
   { params }: { params: { fileId: string } }
-) {
+): Promise<NextResponse> {
   try {
     const { fileId } = params;
 

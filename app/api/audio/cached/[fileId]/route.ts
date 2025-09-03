@@ -16,7 +16,7 @@ if (!fs.existsSync(CACHE_DIR)) {
 export async function GET(
   request: NextRequest,
   { params }: { params: { fileId: string } }
-) {
+): Promise<NextResponse> {
   try {
     const { fileId } = params;
 
