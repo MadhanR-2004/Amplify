@@ -11,7 +11,9 @@ const transporter = nodemailer.createTransport({
 });
 
 export async function sendVerificationEmail(email: string, token: string) {
-  const verificationUrl = `${process.env.NEXT_PUBLIC_APP_URL}/verify?token=${token}`;
+  // Use APP_URL for server-side, fallback to NEXT_PUBLIC_APP_URL for client-side
+  const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const verificationUrl = `${appUrl}/verify?token=${token}`;
   
   const mailOptions = {
     from: process.env.EMAIL_FROM,
@@ -82,7 +84,9 @@ export async function sendPasswordResetOTP(email: string, otp: string) {
 }
 
 export async function sendPasswordResetEmail(email: string, token: string) {
-  const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL}/reset-password?token=${token}`;
+  // Use APP_URL for server-side, fallback to NEXT_PUBLIC_APP_URL for client-side
+  const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const resetUrl = `${appUrl}/reset-password?token=${token}`;
   
   const mailOptions = {
     from: process.env.EMAIL_FROM,
