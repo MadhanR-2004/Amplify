@@ -18,7 +18,7 @@ export default function Home() {
               <img
   src="/logo.png"
   alt="Music Streaming App"
-  className="h-32 sm:h-36 md:h-44 w-auto drop-shadow-lg"// Increased from h-16/h-20/h-24
+  className="h-40 sm:h-48 md:h-56 w-auto drop-shadow-lg"  Increased from h-16/h-20/h-24
   onError={(e) => { (e.target as HTMLImageElement).src = '/default-thumbnail.svg'; }}
 />
             </div>
