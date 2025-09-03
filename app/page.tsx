@@ -16,11 +16,11 @@ export default function Home() {
           <div className="text-center text-white mb-16">
             <div className="mb-6 flex justify-center">
               <img
-                src="/logo.png"
-                alt="Music Streaming App"
-                className="h-16 sm:h-20 md:h-24 w-auto drop-shadow-lg"
-                onError={(e) => { (e.target as HTMLImageElement).src = '/default-thumbnail.svg'; }}
-              />
+  src="/logo.png"
+  alt="Music Streaming App"
+  className="h-20 sm:h-24 md:h-32 w-auto drop-shadow-lg" // Increased from h-16/h-20/h-24
+  onError={(e) => { (e.target as HTMLImageElement).src = '/default-thumbnail.svg'; }}
+/>
             </div>
             <p className="text-xl mb-8 text-gray-100 max-w-2xl mx-auto">
               Discover, stream, and enjoy millions of songs. Create playlists, follow artists, and immerse yourself in the world of music.
